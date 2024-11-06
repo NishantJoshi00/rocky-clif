@@ -57,9 +57,21 @@ pub fn build(b: *std.Build) void {
     attachRocks(b, exe_unit_tests, &target.result);
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
+
+    const storage_unit_tests = b.addTest(.{
+        .root_source_file = b.path("src/storage.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    attachRocks(b, storage_unit_tests, &target.result);
+
+    const run_storage_unit_tests = b.addRunArtifact(storage_unit_tests);
+
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_unit_tests.step);
     test_step.dependOn(&run_exe_unit_tests.step);
+    test_step.dependOn(&run_storage_unit_tests.step);
 }
 
 fn attachRocks(b: *std.Build, to: *std.Build.Step.Compile, target: *const std.Target) void {
@@ -69,7 +81,8 @@ fn attachRocks(b: *std.Build, to: *std.Build.Step.Compile, target: *const std.Ta
     to.addIncludePath(b.path("./rocksdb/include"));
 
     if (target.isDarwin()) {
-        b.installFile("./rocksdb/librocksdb.9.9.0.dylib", "../librocksdb.9.9.0.dylib");
+        const install_dylib = b.addInstallFile(b.path("./rocksdb/librocksdb.9.9.0.dylib"), "../librocksdb.9.9.dylib");
+        to.step.dependOn(&install_dylib.step);
         to.addRPath(b.path("."));
     }
 }

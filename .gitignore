@@ -1,3 +1,4 @@
 /rocksdb
 /zig-out
 /.zig-cache
+*.dylib
