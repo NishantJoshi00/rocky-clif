@@ -11,10 +11,29 @@ pub const RocksDB = struct {
     const RocksDBError = error{
         InitializationFailed,
         SetFailed,
+        DelFailed,
         GetFailed,
         NotFound,
         GetIteratorFailed,
+        DestroyFailed,
     };
+
+    pub fn drop(alloc: std.mem.Allocator, dir: []const u8) !void {
+        const arena = std.heap.ArenaAllocator.init(alloc);
+        var err: ?[*:0]u8 = null;
+
+        const options = rdb.rocksdb_options_create();
+        defer rdb.rocksdb_options_destroy(options);
+
+        rdb.rocksdb_destroy_db(options, dir.ptr, &err);
+
+        if (err) |errStr| {
+            std.log.err("Failed to drop RocksDB: {s}", .{errStr});
+            return RocksDBError.DestroyFailed;
+        }
+
+        defer arena.deinit();
+    }
 
     pub fn open(alloc: std.mem.Allocator, dir: []const u8) !Self {
         const arena = std.heap.ArenaAllocator.init(alloc);
@@ -55,6 +74,26 @@ pub const RocksDB = struct {
         if (err) |errStr| {
             std.log.err("Failed to set key: {s}", .{errStr});
             return RocksDBError.SetFailed;
+        }
+    }
+
+    pub fn del(self: *Self, key: []const u8) !void {
+        const write_options = rdb.rocksdb_writeoptions_create();
+        defer rdb.rocksdb_writeoptions_destroy(write_options);
+
+        var err: ?[*:0]u8 = null;
+
+        rdb.rocksdb_delete(
+            self.db,
+            write_options,
+            key.ptr,
+            key.len,
+            &err,
+        );
+
+        if (err) |errStr| {
+            std.log.err("Failed to delete key: {s}", .{errStr});
+            return RocksDBError.DelFailed;
         }
     }
 
@@ -155,19 +194,22 @@ pub const RocksDB = struct {
             var value_size: usize = 0;
             var value = rdb.rocksdb_iter_value(self.iter, &value_size);
 
-            const key_out = key[0..key_size];
-            const value_out = value[0..value_size];
+            const key_out = try self.parent.arena.allocator().alloc(u8, key_size);
+            const value_out = try self.parent.arena.allocator().alloc(u8, value_size);
+
+            std.mem.copyForwards(u8, key_out, key[0..key_size]);
+            std.mem.copyForwards(u8, value_out, value[0..value_size]);
 
             return Entry{ .key = key_out, .value = value_out };
         }
     };
 
     const Helper = struct {
-        fn to_owned(self: *Self, string: []u8) ![]u8 {
+        fn to_owned(self: *Self, string: []const u8) ![]u8 {
             const alloc = self.arena.allocator();
             const result = try alloc.alloc(u8, string.len);
             std.mem.copyForwards(u8, result, string);
-            std.heap.c_allocator.free(string);
+            defer rdb.rocksdb_free(@constCast(string.ptr));
             return result;
         }
 
@@ -176,7 +218,7 @@ pub const RocksDB = struct {
             const spanned = std.mem.span(zstr);
             const result = try alloc.alloc(u8, spanned.len);
             std.mem.copyForwards(u8, result, spanned);
-            std.heap.c_allocator.free(zstr);
+            defer rdb.rocksdb_free(@constCast(zstr));
             return result;
         }
     };
@@ -198,6 +240,19 @@ test "RocksDB.set:get" {
     const value1 = try db.get("key1");
 
     try std.testing.expectEqualStrings("value1", value1);
+}
+
+test "RocksDB.del" {
+    const alloc = std.testing.allocator;
+    var db = try RocksDB.open(alloc, "/tmp/db");
+    defer db.deinit();
+
+    try db.set("key1", "value1");
+    try db.del("key1");
+
+    const value1 = db.get("key1");
+
+    try std.testing.expectEqual(RocksDB.RocksDBError.NotFound, value1);
 }
 
 test "RocksDB.iter" {
